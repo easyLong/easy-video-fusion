@@ -1,0 +1,3 @@
+[console_scripts]
+easy-video-fusion = easy_video_fusion.cli:main
+easy-video-fusion-gui = easy_video_fusion.gui:main

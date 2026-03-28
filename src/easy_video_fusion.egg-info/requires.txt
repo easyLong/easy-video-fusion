@@ -1,0 +1,6 @@
+customtkinter>=5.2.2
+imageio-ffmpeg>=0.6.0
+tinytag>=2.2.0
+
+[build]
+pyinstaller>=6.10

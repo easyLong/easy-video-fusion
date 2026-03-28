@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easy-video-fusion"
+version = "0.1.0"
+description = "Local tools for generating MP4 videos from image and TTS audio pairs."
+requires-python = ">=3.10"
+dependencies = [
+  "imageio-ffmpeg>=0.6.0",
+  "tinytag>=2.2.0",
+]
+
+[project.scripts]
+easy-video-fusion = "easy_video_fusion.cli:main"
+easy-video-fusion-gui = "easy_video_fusion.gui:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
