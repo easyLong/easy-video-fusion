@@ -17,7 +17,7 @@ except Exception as error:  # pragma: no cover - imported only in GUI environmen
 else:
     _tkinter_import_error = None
 
-from .args import DEFAULT_FPS, DEFAULT_HEIGHT, DEFAULT_PADDING_SECONDS, DEFAULT_WIDTH, BuildOptions, parse_resolution_text
+from .args import DEFAULT_FPS, DEFAULT_HEIGHT, DEFAULT_PADDING_SECONDS, DEFAULT_WIDTH, DEFAULT_INTRO_SECONDS, BuildOptions, parse_resolution_text
 from .errors import VideoFusionError, to_error_message
 from .video_fusion import build_video_project
 
@@ -33,6 +33,7 @@ class FormValues:
     padding_seconds: str
     fps: str
     resolution: str
+    intro_seconds: str
 
 
 def build_options_from_values(values: FormValues) -> BuildOptions:
@@ -63,6 +64,13 @@ def build_options_from_values(values: FormValues) -> BuildOptions:
     resolution_text = values.resolution.strip() or f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT}"
     width, height = parse_resolution_text(resolution_text)
 
+    try:
+        intro_seconds = float(values.intro_seconds.strip() or DEFAULT_INTRO_SECONDS)
+    except ValueError as error:
+        raise VideoFusionError("开场秒数格式不正确。") from error
+    if intro_seconds < 0:
+        raise VideoFusionError("开场秒数不能为负数。")
+
     return BuildOptions(
         images=[],
         audios=[],
@@ -72,6 +80,7 @@ def build_options_from_values(values: FormValues) -> BuildOptions:
         padding_seconds=padding_seconds,
         fps=fps,
         resolution=(width, height),
+        intro_seconds=intro_seconds,
     )
 
 
@@ -92,8 +101,8 @@ class VideoFusionDesktopApp:
 
         self.root = tk.Tk()
         self.root.title("easy-video-fusion")
-        self.root.geometry("720x420")
-        self.root.minsize(680, 380)
+        self.root.geometry("720x480")
+        self.root.minsize(680, 440)
 
         self.images_dir = tk.StringVar()
         self.audios_dir = tk.StringVar()
@@ -101,6 +110,7 @@ class VideoFusionDesktopApp:
         self.padding_seconds = tk.StringVar(value=str(int(DEFAULT_PADDING_SECONDS)))
         self.fps = tk.StringVar(value=str(DEFAULT_FPS))
         self.resolution = tk.StringVar(value=f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
+        self.intro_seconds = tk.StringVar(value=str(int(DEFAULT_INTRO_SECONDS)))
         self.output_dir: Path | None = None
         self.is_busy = False
 
@@ -128,11 +138,12 @@ class VideoFusionDesktopApp:
 
         ttk.Label(main, text="参数", font=("Segoe UI", 11, "bold")).grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 8))
         self._field_row(main, 7, "缓冲秒数", self.padding_seconds, "默认 1 秒")
-        self._combo_row(main, 8, "帧率", self.fps, FPS_OPTIONS)
-        self._combo_row(main, 9, "分辨率", self.resolution, RESOLUTION_OPTIONS)
+        self._field_row(main, 8, "开场秒数", self.intro_seconds, "默认 5 秒")
+        self._combo_row(main, 9, "帧率", self.fps, FPS_OPTIONS)
+        self._combo_row(main, 10, "分辨率", self.resolution, RESOLUTION_OPTIONS)
 
         button_row = ttk.Frame(main)
-        button_row.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+        button_row.grid(row=11, column=0, columnspan=3, sticky="ew", pady=(14, 0))
         button_row.columnconfigure(2, weight=1)
 
         self.generate_button = ttk.Button(button_row, text="生成视频", command=self._on_generate)
@@ -197,6 +208,7 @@ class VideoFusionDesktopApp:
                     padding_seconds=self.padding_seconds.get(),
                     fps=self.fps.get(),
                     resolution=self.resolution.get(),
+                    intro_seconds=self.intro_seconds.get(),
                 )
             )
         except VideoFusionError as error:

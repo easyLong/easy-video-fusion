@@ -10,6 +10,7 @@ DEFAULT_PADDING_SECONDS = 1.0
 DEFAULT_FPS = 30
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
+DEFAULT_INTRO_SECONDS = 5.0
 
 
 @dataclass(slots=True)
@@ -22,6 +23,7 @@ class BuildOptions:
     padding_seconds: float
     fps: int
     resolution: tuple[int, int]
+    intro_seconds: float = DEFAULT_INTRO_SECONDS
 
 
 @dataclass(slots=True)
@@ -38,11 +40,12 @@ def format_usage() -> str:
             "Usage:",
             "  easy-video-fusion build --images-dir <dir> --audios-dir <dir> --out <file.mp4>",
             "  easy-video-fusion build --image <path> --audio <path> [--image ... --audio ...] --out <file.mp4>",
-            "                       [--padding-seconds 1] [--fps 30] [--resolution 1920x1080]",
+            "                       [--padding-seconds 1] [--fps 30] [--resolution 1920x1080] [--intro-seconds 5]",
             "",
             "Examples:",
             "  easy-video-fusion build --images-dir images --audios-dir audios --out out.mp4",
             "  easy-video-fusion build --image 01.png --audio 01.mp3 --image 02.png --audio 02.mp3 --out out.mp4",
+            "  easy-video-fusion build --images-dir images --audios-dir audios --out out.mp4 --intro-seconds 3",
         ]
     )
 
@@ -102,6 +105,7 @@ def parse_cli_args(argv: Sequence[str]) -> ParsedCli:
     padding_seconds = DEFAULT_PADDING_SECONDS
     fps = DEFAULT_FPS
     resolution = (DEFAULT_WIDTH, DEFAULT_HEIGHT)
+    intro_seconds = DEFAULT_INTRO_SECONDS
 
     i = 0
     while i < len(tokens):
@@ -161,6 +165,16 @@ def parse_cli_args(argv: Sequence[str]) -> ParsedCli:
             resolution = parse_resolution_text(value)
             i = next_index + 1
             continue
+        if flag_name == "--intro-seconds":
+            value, next_index = read_flag_value("--intro-seconds")
+            try:
+                intro_seconds = float(value)
+                if intro_seconds < 0:
+                    raise VideoFusionError("--intro-seconds must be >= 0.")
+            except ValueError as error:
+                raise VideoFusionError(f"Invalid value for --intro-seconds: {value}") from error
+            i = next_index + 1
+            continue
         raise VideoFusionError(f"Unknown option: {token}")
 
     if out_path is None:
@@ -196,5 +210,6 @@ def parse_cli_args(argv: Sequence[str]) -> ParsedCli:
             padding_seconds=padding_seconds,
             fps=fps,
             resolution=resolution,
+            intro_seconds=intro_seconds,
         ),
     )

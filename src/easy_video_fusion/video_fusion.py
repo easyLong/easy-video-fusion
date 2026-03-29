@@ -200,6 +200,7 @@ def build_video_project(
     *,
     probe_duration_fn=probe_audio_duration_seconds,
     run_ffmpeg_fn=run_ffmpeg,
+    progress_fn=None,
 ) -> dict[str, object]:
     width, height = _normalize_resolution(options.resolution)
     out_path = Path(options.out_path)
@@ -233,7 +234,39 @@ def build_video_project(
         timeline = build_timeline(probed_pairs, options.padding_seconds)
 
         segment_paths: list[str] = []
-        for slide in timeline:
+
+        # Add intro with first image (no audio)
+        if timeline and options.intro_seconds > 0:
+            intro_path = str(temp_dir / "segment-0000.mp4")
+            segment_paths.append(intro_path)
+            if progress_fn:
+                progress_fn(f"生成{options.intro_seconds:.0f}秒开场...")
+            first_slide = timeline[0]
+            video_filter = ",".join(
+                [
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
+                    "setsar=1",
+                    f"fps={options.fps}",
+                    "format=yuv420p",
+                ]
+            )
+            # ⭐ 添加静音音频轨道，避免 concat 后丢失声音
+            run_ffmpeg_fn([
+                "-y", "-loop", "1", "-i", first_slide.image_path,
+                "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono",
+                "-vf", video_filter,
+                "-shortest",
+                "-t", f"{options.intro_seconds:.1f}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+                intro_path
+            ])
+
+        for i, slide in enumerate(timeline):
+            if progress_fn:
+                progress_fn(f"处理第 {i+1}/{len(timeline)} 张图片...")
             segment_path = str(temp_dir / f"segment-{slide.index + 1:04d}.mp4")
             segment_paths.append(segment_path)
             _render_segment(
@@ -248,6 +281,8 @@ def build_video_project(
                 height=height,
             )
 
+        if progress_fn:
+            progress_fn("合并视频段落...")
         _concat_segments(
             run_ffmpeg_fn=run_ffmpeg_fn,
             segment_paths=segment_paths,
