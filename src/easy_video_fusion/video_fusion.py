@@ -6,8 +6,19 @@ import tempfile
 
 from .args import BuildOptions
 from .errors import VideoFusionError
-from .ffmpeg import probe_audio_duration_seconds, run_ffmpeg
+from .ffmpeg import list_available_video_encoders, probe_audio_duration_seconds, run_ffmpeg
 from .timeline import PairInput, TimedPairInput, build_timeline, pair_inputs
+
+AUDIO_SAMPLE_RATE = 24000
+AUDIO_CHANNEL_LAYOUT = "stereo"
+AUDIO_CHANNEL_COUNT = 2
+AUTO_ENCODER_PRIORITY = ("h264_nvenc", "h264_qsv", "h264_amf")
+ENCODER_TO_CODEC = {
+    "cpu": "libx264",
+    "nvenc": "h264_nvenc",
+    "qsv": "h264_qsv",
+    "amf": "h264_amf",
+}
 
 
 @dataclass(slots=True)
@@ -15,6 +26,11 @@ class ScannedFile:
     base_name: str
     numeric_value: int
     full_path: str
+
+
+def _emit_progress(progress_fn, message: str) -> None:
+    if progress_fn:
+        progress_fn(message)
 
 
 def _normalize_resolution(resolution: tuple[int, int] | None) -> tuple[int, int]:
@@ -116,6 +132,52 @@ def _ensure_path_exists(target_path: Path, *, expected_kind: str = "file") -> No
         raise VideoFusionError(f"Expected a directory but found a different path: {target_path}")
 
 
+def _resolve_video_codec(encoder: str) -> str:
+    normalized = (encoder or "auto").strip().lower()
+    if normalized == "auto":
+        available = list_available_video_encoders()
+        for codec in AUTO_ENCODER_PRIORITY:
+            if codec in available:
+                return codec
+        return "libx264"
+
+    if normalized not in ENCODER_TO_CODEC:
+        raise VideoFusionError(f"Unsupported encoder value: {encoder}")
+
+    codec = ENCODER_TO_CODEC[normalized]
+    if codec == "libx264":
+        return codec
+
+    available = list_available_video_encoders()
+    if codec not in available:
+        available_hw = [name for name in AUTO_ENCODER_PRIORITY if name in available]
+        hint = f" Available hardware encoders: {', '.join(available_hw)}." if available_hw else " No hardware encoder is available."
+        raise VideoFusionError(f"Requested encoder '{normalized}' is not available in current ffmpeg build.{hint}")
+    return codec
+
+
+def _build_video_codec_args(codec: str, *, fast_mode: bool) -> list[str]:
+    if codec == "libx264":
+        preset = "ultrafast" if fast_mode else "veryfast"
+        crf = "23" if fast_mode else "18"
+        return ["-c:v", codec, "-preset", preset, "-crf", crf]
+
+    if codec == "h264_nvenc":
+        preset = "p3" if fast_mode else "p5"
+        cq = "24" if fast_mode else "20"
+        return ["-c:v", codec, "-preset", preset, "-rc", "vbr", "-cq", cq, "-b:v", "0"]
+
+    if codec == "h264_qsv":
+        quality = "28" if fast_mode else "22"
+        return ["-c:v", codec, "-global_quality", quality]
+
+    if codec == "h264_amf":
+        quality = "speed" if fast_mode else "quality"
+        return ["-c:v", codec, "-quality", quality]
+
+    return ["-c:v", codec]
+
+
 def _render_segment(
     *,
     run_ffmpeg_fn,
@@ -127,6 +189,7 @@ def _render_segment(
     fps: int,
     width: int,
     height: int,
+    video_codec_args: list[str],
 ) -> None:
     video_filter = ",".join(
         [
@@ -156,16 +219,67 @@ def _render_segment(
             "[aout]",
             "-t",
             f"{duration_seconds:.3f}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "18",
+            *video_codec_args,
             "-c:a",
             "aac",
             "-b:a",
             "192k",
+            "-ar",
+            str(AUDIO_SAMPLE_RATE),
+            "-ac",
+            str(AUDIO_CHANNEL_COUNT),
+            "-movflags",
+            "+faststart",
+            output_path,
+        ]
+    )
+
+
+def _render_intro_segment(
+    *,
+    run_ffmpeg_fn,
+    image_path: str,
+    output_path: str,
+    intro_seconds: float,
+    fps: int,
+    width: int,
+    height: int,
+    video_codec_args: list[str],
+) -> None:
+    video_filter = ",".join(
+        [
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
+            "setsar=1",
+            f"fps={fps}",
+            "format=yuv420p",
+        ]
+    )
+    run_ffmpeg_fn(
+        [
+            "-y",
+            "-loop",
+            "1",
+            "-i",
+            image_path,
+            "-f",
+            "lavfi",
+            "-i",
+            f"anullsrc=r={AUDIO_SAMPLE_RATE}:cl={AUDIO_CHANNEL_LAYOUT}",
+            "-vf",
+            video_filter,
+            "-shortest",
+            "-t",
+            f"{intro_seconds:.3f}",
+            *video_codec_args,
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            str(AUDIO_SAMPLE_RATE),
+            "-ac",
+            str(AUDIO_CHANNEL_COUNT),
             "-movflags",
             "+faststart",
             output_path,
@@ -202,9 +316,15 @@ def build_video_project(
     run_ffmpeg_fn=run_ffmpeg,
     progress_fn=None,
 ) -> dict[str, object]:
+    _emit_progress(progress_fn, "Resolving encoder and input files...")
     width, height = _normalize_resolution(options.resolution)
+    video_codec = _resolve_video_codec(options.encoder)
+    video_codec_args = _build_video_codec_args(video_codec, fast_mode=options.fast_mode)
+    _emit_progress(progress_fn, f"Using video codec: {video_codec} (fast mode: {'on' if options.fast_mode else 'off'})")
+
     out_path = Path(options.out_path)
     pairs = _resolve_inputs(options)
+    _emit_progress(progress_fn, f"Resolved {len(pairs)} image/audio pair(s).")
 
     if not options.images_dir:
         for file_path in [*options.images, *options.audios]:
@@ -218,7 +338,8 @@ def build_video_project(
     with tempfile.TemporaryDirectory(prefix="easy-video-fusion-") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         probed_pairs: list[TimedPairInput] = []
-        for pair in pairs:
+        for i, pair in enumerate(pairs):
+            _emit_progress(progress_fn, f"Probing audio duration {i + 1}/{len(pairs)}...")
             audio_duration_seconds = probe_duration_fn(pair.audio_path)
             if audio_duration_seconds <= 0:
                 raise VideoFusionError(f"Unable to read duration from {pair.audio_path}.")
@@ -232,41 +353,27 @@ def build_video_project(
             )
 
         timeline = build_timeline(probed_pairs, options.padding_seconds)
+        _emit_progress(progress_fn, f"Timeline ready with {len(timeline)} slide segment(s).")
 
         segment_paths: list[str] = []
 
-        # Add intro with first image (no audio)
         if timeline and options.intro_seconds > 0:
+            _emit_progress(progress_fn, f"Rendering intro segment ({options.intro_seconds:.1f}s)...")
             intro_path = str(temp_dir / "segment-0000.mp4")
             segment_paths.append(intro_path)
-            if progress_fn:
-                progress_fn(f"生成{options.intro_seconds:.0f}秒开场...")
-            first_slide = timeline[0]
-            video_filter = ",".join(
-                [
-                    f"scale={width}:{height}:force_original_aspect_ratio=decrease",
-                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
-                    "setsar=1",
-                    f"fps={options.fps}",
-                    "format=yuv420p",
-                ]
+            _render_intro_segment(
+                run_ffmpeg_fn=run_ffmpeg_fn,
+                image_path=timeline[0].image_path,
+                output_path=intro_path,
+                intro_seconds=options.intro_seconds,
+                fps=options.fps,
+                width=width,
+                height=height,
+                video_codec_args=video_codec_args,
             )
-            # ⭐ 添加静音音频轨道，避免 concat 后丢失声音
-            run_ffmpeg_fn([
-                "-y", "-loop", "1", "-i", first_slide.image_path,
-                "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono",
-                "-vf", video_filter,
-                "-shortest",
-                "-t", f"{options.intro_seconds:.1f}",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-                "-c:a", "aac", "-b:a", "192k",
-                "-movflags", "+faststart",
-                intro_path
-            ])
 
         for i, slide in enumerate(timeline):
-            if progress_fn:
-                progress_fn(f"处理第 {i+1}/{len(timeline)} 张图片...")
+            _emit_progress(progress_fn, f"Rendering slide segment {i + 1}/{len(timeline)}...")
             segment_path = str(temp_dir / f"segment-{slide.index + 1:04d}.mp4")
             segment_paths.append(segment_path)
             _render_segment(
@@ -279,20 +386,23 @@ def build_video_project(
                 fps=options.fps,
                 width=width,
                 height=height,
+                video_codec_args=video_codec_args,
             )
 
-        if progress_fn:
-            progress_fn("合并视频段落...")
+        _emit_progress(progress_fn, "Concatenating all segments...")
         _concat_segments(
             run_ffmpeg_fn=run_ffmpeg_fn,
             segment_paths=segment_paths,
             output_path=str(out_path),
             temp_dir=temp_dir,
         )
+        _emit_progress(progress_fn, "Done.")
 
         return {
             "output_path": str(out_path),
             "temp_dir": temp_dir_name,
             "slides": timeline,
             "segment_paths": segment_paths,
+            "video_codec": video_codec,
+            "fast_mode": options.fast_mode,
         }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from easy_video_fusion.args import DEFAULT_FPS, DEFAULT_PADDING_SECONDS, DEFAULT_WIDTH, DEFAULT_HEIGHT
+from easy_video_fusion.args import DEFAULT_FPS, DEFAULT_HEIGHT, DEFAULT_INTRO_SECONDS, DEFAULT_PADDING_SECONDS, DEFAULT_WIDTH
 from easy_video_fusion.gui import FPS_OPTIONS, RESOLUTION_OPTIONS, FormValues, build_options_from_values
 
 
@@ -16,12 +16,14 @@ class GuiConfigTest(unittest.TestCase):
                 padding_seconds="",
                 fps="",
                 resolution="",
+                intro_seconds="",
             )
         )
 
         self.assertEqual(options.padding_seconds, DEFAULT_PADDING_SECONDS)
         self.assertEqual(options.fps, DEFAULT_FPS)
         self.assertEqual(options.resolution, (DEFAULT_WIDTH, DEFAULT_HEIGHT))
+        self.assertEqual(options.intro_seconds, DEFAULT_INTRO_SECONDS)
 
     def test_build_options_from_values_parses_custom_inputs(self) -> None:
         options = build_options_from_values(
@@ -32,12 +34,14 @@ class GuiConfigTest(unittest.TestCase):
                 padding_seconds="2",
                 fps="24",
                 resolution="1280x720",
+                intro_seconds="3",
             )
         )
 
         self.assertEqual(options.padding_seconds, 2.0)
         self.assertEqual(options.fps, 24)
         self.assertEqual(options.resolution, (1280, 720))
+        self.assertEqual(options.intro_seconds, 3.0)
 
     def test_gui_preset_options_include_common_choices(self) -> None:
         self.assertIn("30", FPS_OPTIONS)

@@ -13,12 +13,15 @@ Use the bundled standalone scripts in this skill directory. Do not depend on any
 - Directory mode using numbered files like `001.png` plus `001.mp3`
 - Explicit pair mode using repeated `--image` and `--audio`
 - Optional intro hold using the first image before audio begins
+- Encoder selection with auto hardware preference (`nvenc` / `qsv` / `amf` / `cpu`)
+- Fast mode that uses speed-oriented encoder parameters
+- Real-time progress logs for probing, segment rendering, and concat stages
 - FFmpeg concat-based rendering with a silent audio track for the intro segment
 
 ## Requirements
 
 - Python 3.10 or newer
-- `ffmpeg` and `ffprobe` available on `PATH`
+- `ffmpeg` available on `PATH` (or at `bin/ffmpeg(.exe)` inside the copied skill folder)
 
 ## Run It
 
@@ -27,6 +30,7 @@ Use the Python entry point from inside the copied skill folder:
 ```powershell
 python scripts/easy_video_fusion.py --help
 python scripts/easy_video_fusion.py build --images-dir ./images --audios-dir ./audios --out ./out/video.mp4
+python scripts/easy_video_fusion.py build --images-dir ./images --audios-dir ./audios --out ./out/video.mp4 --encoder nvenc --fast
 ```
 
 Explicit pair mode:
@@ -46,6 +50,8 @@ Supported flags:
 - `--fps <n>` default `30`
 - `--resolution <WxH>` default `1920x1080`
 - `--intro-seconds <n>` default `5`
+- `--encoder <name>` default `auto`, choices: `auto`, `cpu`, `nvenc`, `qsv`, `amf`
+- `--fast` optional speed mode switch
 
 ## Behavior Notes
 
@@ -53,5 +59,6 @@ Supported flags:
 - Image and audio stems must be numeric and must match exactly.
 - Slide duration is `audio duration + padding`.
 - Intro duration is a separate silent segment that shows the first image before the first audio starts.
-- The script first looks for `bin/ffmpeg(.exe)` and `bin/ffprobe(.exe)` next to the skill, then falls back to `PATH`.
+- Audio duration probing uses `ffmpeg -i` duration parsing to avoid incorrect WAV header estimates.
+- The script first looks for `bin/ffmpeg(.exe)` next to the skill, then falls back to `PATH`.
 - If the user asks to change intro or timing behavior, edit the standalone script in this skill instead of external project code.

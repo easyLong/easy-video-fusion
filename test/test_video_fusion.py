@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from easy_video_fusion.args import BuildOptions
 from easy_video_fusion.video_fusion import build_video_project
@@ -19,6 +20,7 @@ class VideoFusionTest(unittest.TestCase):
             "padding_seconds": 3.0,
             "fps": 30,
             "resolution": (1920, 1080),
+            "intro_seconds": 0.0,
         }
         base.update(overrides)
         return BuildOptions(**base)
@@ -116,6 +118,33 @@ class VideoFusionTest(unittest.TestCase):
                 ["1.mp3", "2.mp3", "10.mp3"],
             )
             self.assertEqual(probe_calls, [str(audios_dir / "1.mp3"), str(audios_dir / "2.mp3"), str(audios_dir / "10.mp3")])
+
+    def test_auto_encoder_prefers_nvenc_when_available(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="easy-video-fusion-encoder-") as temp_root:
+            root = Path(temp_root)
+            image = root / "01.png"
+            audio = root / "01.mp3"
+            image.write_bytes(b"img")
+            audio.write_bytes(b"aud")
+            out_path = root / "out" / "video.mp4"
+            ffmpeg_calls: list[list[str]] = []
+
+            with patch("easy_video_fusion.video_fusion.list_available_video_encoders", return_value={"h264_nvenc"}):
+                build_video_project(
+                    self._make_options(
+                        images=[str(image)],
+                        audios=[str(audio)],
+                        out_path=str(out_path),
+                        encoder="auto",
+                        fast_mode=True,
+                    ),
+                    probe_duration_fn=lambda _: 1.5,
+                    run_ffmpeg_fn=lambda args: ffmpeg_calls.append(args),
+                )
+
+            self.assertTrue(any("h264_nvenc" in args for args in ffmpeg_calls))
+            first_render_call = ffmpeg_calls[0]
+            self.assertIn("p3", first_render_call)
 
 
 if __name__ == "__main__":

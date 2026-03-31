@@ -11,6 +11,8 @@ DEFAULT_FPS = 30
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 DEFAULT_INTRO_SECONDS = 5.0
+DEFAULT_ENCODER = "auto"
+ENCODER_CHOICES = ("auto", "cpu", "nvenc", "qsv", "amf")
 
 
 @dataclass(slots=True)
@@ -24,6 +26,8 @@ class BuildOptions:
     fps: int
     resolution: tuple[int, int]
     intro_seconds: float = DEFAULT_INTRO_SECONDS
+    encoder: str = DEFAULT_ENCODER
+    fast_mode: bool = False
 
 
 @dataclass(slots=True)
@@ -41,6 +45,7 @@ def format_usage() -> str:
             "  easy-video-fusion build --images-dir <dir> --audios-dir <dir> --out <file.mp4>",
             "  easy-video-fusion build --image <path> --audio <path> [--image ... --audio ...] --out <file.mp4>",
             "                       [--padding-seconds 1] [--fps 30] [--resolution 1920x1080] [--intro-seconds 5]",
+            "                       [--encoder auto|cpu|nvenc|qsv|amf] [--fast]",
             "",
             "Examples:",
             "  easy-video-fusion build --images-dir images --audios-dir audios --out out.mp4",
@@ -106,6 +111,8 @@ def parse_cli_args(argv: Sequence[str]) -> ParsedCli:
     fps = DEFAULT_FPS
     resolution = (DEFAULT_WIDTH, DEFAULT_HEIGHT)
     intro_seconds = DEFAULT_INTRO_SECONDS
+    encoder = DEFAULT_ENCODER
+    fast_mode = False
 
     i = 0
     while i < len(tokens):
@@ -175,6 +182,21 @@ def parse_cli_args(argv: Sequence[str]) -> ParsedCli:
                 raise VideoFusionError(f"Invalid value for --intro-seconds: {value}") from error
             i = next_index + 1
             continue
+        if flag_name == "--encoder":
+            value, next_index = read_flag_value("--encoder")
+            normalized = value.strip().lower()
+            if normalized not in ENCODER_CHOICES:
+                choices = ", ".join(ENCODER_CHOICES)
+                raise VideoFusionError(f"Invalid value for --encoder: {value}. Choose one of: {choices}.")
+            encoder = normalized
+            i = next_index + 1
+            continue
+        if flag_name == "--fast":
+            if inline_value is not None:
+                raise VideoFusionError("--fast does not take a value.")
+            fast_mode = True
+            i += 1
+            continue
         raise VideoFusionError(f"Unknown option: {token}")
 
     if out_path is None:
@@ -211,5 +233,7 @@ def parse_cli_args(argv: Sequence[str]) -> ParsedCli:
             fps=fps,
             resolution=resolution,
             intro_seconds=intro_seconds,
+            encoder=encoder,
+            fast_mode=fast_mode,
         ),
     )

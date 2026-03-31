@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
+import time
 
 
 DEFAULT_PADDING_SECONDS = 1.0
@@ -12,6 +14,19 @@ DEFAULT_FPS = 30
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 DEFAULT_INTRO_SECONDS = 5.0
+DEFAULT_ENCODER = "auto"
+ENCODER_CHOICES = ("auto", "cpu", "nvenc", "qsv", "amf")
+AUDIO_SAMPLE_RATE = 24000
+AUDIO_CHANNEL_LAYOUT = "stereo"
+AUDIO_CHANNEL_COUNT = 2
+AUTO_ENCODER_PRIORITY = ("h264_nvenc", "h264_qsv", "h264_amf")
+ENCODER_TO_CODEC = {
+    "cpu": "libx264",
+    "nvenc": "h264_nvenc",
+    "qsv": "h264_qsv",
+    "amf": "h264_amf",
+}
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 
 
 class VideoFusionError(Exception):
@@ -28,7 +43,9 @@ class BuildOptions:
     padding_seconds: float
     fps: int
     resolution: tuple[int, int]
-    intro_seconds: float
+    intro_seconds: float = DEFAULT_INTRO_SECONDS
+    encoder: str = DEFAULT_ENCODER
+    fast_mode: bool = False
 
 
 @dataclass(slots=True)
@@ -43,6 +60,24 @@ class TimedPairInput(PairInput):
     audio_duration_seconds: float
 
 
+@dataclass(slots=True)
+class TimelineSlide:
+    index: int
+    image_path: str
+    audio_path: str
+    audio_duration_seconds: float
+    duration_seconds: float
+    start_seconds: float
+    end_seconds: float
+
+
+@dataclass(slots=True)
+class ScannedFile:
+    base_name: str
+    numeric_value: int
+    full_path: str
+
+
 def format_usage() -> str:
     return "\n".join(
         [
@@ -52,13 +87,20 @@ def format_usage() -> str:
             "  easy-video-fusion build --images-dir <dir> --audios-dir <dir> --out <file.mp4>",
             "  easy-video-fusion build --image <path> --audio <path> [--image ... --audio ...] --out <file.mp4>",
             "                       [--padding-seconds 1] [--fps 30] [--resolution 1920x1080] [--intro-seconds 5]",
+            "                       [--encoder auto|cpu|nvenc|qsv|amf] [--fast]",
             "",
             "Examples:",
             "  easy-video-fusion build --images-dir images --audios-dir audios --out out.mp4",
             "  easy-video-fusion build --image 01.png --audio 01.mp3 --image 02.png --audio 02.mp3 --out out.mp4",
             "  easy-video-fusion build --images-dir images --audios-dir audios --out out.mp4 --intro-seconds 3",
+            "  easy-video-fusion build --images-dir images --audios-dir audios --out out.mp4 --encoder nvenc --fast",
         ]
     )
+
+
+def _emit_progress(progress_fn, message: str) -> None:
+    if progress_fn:
+        progress_fn(message)
 
 
 def _normalize_path_input(value: str) -> str:
@@ -68,15 +110,12 @@ def _normalize_path_input(value: str) -> str:
     return str(Path(trimmed).expanduser().resolve())
 
 
-def _parse_number(value: str, flag_name: str, *, integer: bool = False, allow_zero: bool = False) -> float | int:
+def _parse_number(value: str, flag_name: str, *, integer: bool = False) -> float | int:
     try:
         parsed = int(value, 10) if integer else float(value)
     except ValueError as error:
         raise VideoFusionError(f"Invalid value for {flag_name}: {value}") from error
-    if allow_zero:
-        if parsed < 0:
-            raise VideoFusionError(f"{flag_name} must be >= 0.")
-    elif parsed <= 0:
+    if parsed <= 0:
         raise VideoFusionError(f"{flag_name} must be greater than 0.")
     return parsed
 
@@ -115,6 +154,8 @@ def parse_cli_args(argv: list[str]) -> BuildOptions | None:
     fps = DEFAULT_FPS
     resolution = (DEFAULT_WIDTH, DEFAULT_HEIGHT)
     intro_seconds = DEFAULT_INTRO_SECONDS
+    encoder = DEFAULT_ENCODER
+    fast_mode = False
 
     i = 0
     while i < len(tokens):
@@ -173,8 +214,28 @@ def parse_cli_args(argv: list[str]) -> BuildOptions | None:
             continue
         if flag_name == "--intro-seconds":
             value, next_index = read_flag_value("--intro-seconds")
-            intro_seconds = float(_parse_number(value, "--intro-seconds", allow_zero=True))
+            try:
+                intro_seconds = float(value)
+            except ValueError as error:
+                raise VideoFusionError(f"Invalid value for --intro-seconds: {value}") from error
+            if intro_seconds < 0:
+                raise VideoFusionError("--intro-seconds must be >= 0.")
             i = next_index + 1
+            continue
+        if flag_name == "--encoder":
+            value, next_index = read_flag_value("--encoder")
+            normalized = value.strip().lower()
+            if normalized not in ENCODER_CHOICES:
+                choices = ", ".join(ENCODER_CHOICES)
+                raise VideoFusionError(f"Invalid value for --encoder: {value}. Choose one of: {choices}.")
+            encoder = normalized
+            i = next_index + 1
+            continue
+        if flag_name == "--fast":
+            if inline_value is not None:
+                raise VideoFusionError("--fast does not take a value.")
+            fast_mode = True
+            i += 1
             continue
         raise VideoFusionError(f"Unknown option: {token}")
 
@@ -183,7 +244,6 @@ def parse_cli_args(argv: list[str]) -> BuildOptions | None:
 
     using_directories = images_dir is not None or audios_dir is not None
     using_explicit_pairs = bool(images or audios)
-
     if using_directories and using_explicit_pairs:
         raise VideoFusionError("Use either directory inputs or explicit --image/--audio inputs, not both.")
 
@@ -210,24 +270,9 @@ def parse_cli_args(argv: list[str]) -> BuildOptions | None:
         fps=fps,
         resolution=resolution,
         intro_seconds=intro_seconds,
+        encoder=encoder,
+        fast_mode=fast_mode,
     )
-
-
-def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    kwargs: dict[str, object] = {"check": True, "capture_output": True, "text": True}
-    if sys.platform == "win32":
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-        kwargs["startupinfo"] = startupinfo
-    try:
-        return subprocess.run(command, **kwargs)
-    except FileNotFoundError as error:
-        raise VideoFusionError(f"Command not found: {command[0]}") from error
-    except subprocess.CalledProcessError as error:
-        details = (error.stderr or error.stdout or "").strip()
-        suffix = f": {details}" if details else ""
-        raise VideoFusionError(f"{command[0]} failed{suffix}") from error
 
 
 def _candidate_binary_paths(binary_name: str) -> list[str]:
@@ -245,50 +290,111 @@ def _candidate_binary_paths(binary_name: str) -> list[str]:
 
 def resolve_binary(binary_name: str) -> str:
     for candidate in _candidate_binary_paths(binary_name):
-        if Path(candidate).exists():
-            return candidate
-        if Path(candidate).name == candidate:
+        path = Path(candidate)
+        if path.exists():
+            return str(path)
+        if path.name == candidate:
             return candidate
     return binary_name
 
 
-def probe_audio_duration_seconds(audio_path: str) -> float:
-    result = _run_command(
-        [
-            resolve_binary("ffprobe"),
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            audio_path,
-        ]
-    )
-    value = result.stdout.strip()
+def _run_command(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    kwargs: dict[str, object] = {"check": check, "capture_output": True, "text": True}
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
     try:
-        duration = float(value)
-    except ValueError as error:
-        raise VideoFusionError(f"Unable to read duration from {audio_path}.") from error
+        return subprocess.run(command, **kwargs)
+    except FileNotFoundError as error:
+        raise VideoFusionError(f"Command not found: {command[0]}") from error
+    except subprocess.CalledProcessError as error:
+        details = (error.stderr or error.stdout or "").strip()
+        suffix = f": {details}" if details else ""
+        raise VideoFusionError(f"{command[0]} failed{suffix}") from error
+
+
+def probe_audio_duration_seconds(audio_path: str) -> float:
+    ffmpeg = resolve_binary("ffmpeg")
+    result = _run_command([ffmpeg, "-hide_banner", "-i", audio_path], check=False)
+    match = _DURATION_RE.search(result.stderr or "")
+    if not match:
+        raise VideoFusionError(f"Unable to read duration from {audio_path}.")
+    hours = int(match.group(1))
+    minutes = int(match.group(2))
+    seconds = float(match.group(3))
+    duration = hours * 3600 + minutes * 60 + seconds
     if duration <= 0:
         raise VideoFusionError(f"Unable to read duration from {audio_path}.")
     return duration
 
 
 def run_ffmpeg(args: list[str]) -> None:
-    _run_command([resolve_binary("ffmpeg"), *args])
+    _run_command([resolve_binary("ffmpeg"), *args], check=True)
+
+
+def list_available_video_encoders() -> set[str]:
+    result = _run_command([resolve_binary("ffmpeg"), "-hide_banner", "-encoders"], check=True)
+    encoders: set[str] = set()
+    for line in result.stdout.splitlines():
+        row = line.strip()
+        if not row or row.startswith("Encoders:") or row.startswith("--"):
+            continue
+        parts = row.split()
+        if len(parts) < 2:
+            continue
+        flags, name = parts[0], parts[1]
+        if flags.startswith("V"):
+            encoders.add(name)
+    return encoders
+
+
+def _resolve_video_codec(encoder: str) -> str:
+    normalized = (encoder or "auto").strip().lower()
+    if normalized == "auto":
+        available = list_available_video_encoders()
+        for codec in AUTO_ENCODER_PRIORITY:
+            if codec in available:
+                return codec
+        return "libx264"
+
+    if normalized not in ENCODER_TO_CODEC:
+        raise VideoFusionError(f"Unsupported encoder value: {encoder}")
+
+    codec = ENCODER_TO_CODEC[normalized]
+    if codec == "libx264":
+        return codec
+
+    available = list_available_video_encoders()
+    if codec not in available:
+        available_hw = [name for name in AUTO_ENCODER_PRIORITY if name in available]
+        hint = f" Available hardware encoders: {', '.join(available_hw)}." if available_hw else " No hardware encoder is available."
+        raise VideoFusionError(f"Requested encoder '{normalized}' is not available in current ffmpeg build.{hint}")
+    return codec
+
+
+def _build_video_codec_args(codec: str, *, fast_mode: bool) -> list[str]:
+    if codec == "libx264":
+        preset = "ultrafast" if fast_mode else "veryfast"
+        crf = "23" if fast_mode else "18"
+        return ["-c:v", codec, "-preset", preset, "-crf", crf]
+    if codec == "h264_nvenc":
+        preset = "p3" if fast_mode else "p5"
+        cq = "24" if fast_mode else "20"
+        return ["-c:v", codec, "-preset", preset, "-rc", "vbr", "-cq", cq, "-b:v", "0"]
+    if codec == "h264_qsv":
+        quality = "28" if fast_mode else "22"
+        return ["-c:v", codec, "-global_quality", quality]
+    if codec == "h264_amf":
+        quality = "speed" if fast_mode else "quality"
+        return ["-c:v", codec, "-quality", quality]
+    return ["-c:v", codec]
 
 
 def _to_concat_entry(file_path: str) -> str:
     escaped = file_path.replace("\\", "/").replace("'", "\\'")
     return f"file '{escaped}'"
-
-
-@dataclass(slots=True)
-class ScannedFile:
-    base_name: str
-    numeric_value: int
-    full_path: str
 
 
 def _parse_numeric_stem(file_name: str, kind: str, container_path: Path) -> ScannedFile:
@@ -381,15 +487,23 @@ def _ensure_path_exists(target_path: Path, *, expected_kind: str = "file") -> No
         raise VideoFusionError(f"Expected a directory but found a different path: {target_path}")
 
 
-def build_timeline(pairs: list[TimedPairInput], padding_seconds: float) -> list[TimedPairInput]:
-    timeline: list[TimedPairInput] = []
+def build_timeline(pairs: list[TimedPairInput], padding_seconds: float) -> list[TimelineSlide]:
+    current_start = 0.0
+    timeline: list[TimelineSlide] = []
     for pair in pairs:
+        duration_seconds = pair.audio_duration_seconds + padding_seconds
+        start_seconds = current_start
+        end_seconds = start_seconds + duration_seconds
+        current_start = end_seconds
         timeline.append(
-            TimedPairInput(
+            TimelineSlide(
                 index=pair.index,
                 image_path=pair.image_path,
                 audio_path=pair.audio_path,
-                audio_duration_seconds=pair.audio_duration_seconds + padding_seconds,
+                audio_duration_seconds=pair.audio_duration_seconds,
+                duration_seconds=duration_seconds,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
             )
         )
     return timeline
@@ -405,6 +519,7 @@ def _render_segment(
     fps: int,
     width: int,
     height: int,
+    video_codec_args: list[str],
 ) -> None:
     video_filter = ",".join(
         [
@@ -434,16 +549,15 @@ def _render_segment(
             "[aout]",
             "-t",
             f"{duration_seconds:.3f}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "18",
+            *video_codec_args,
             "-c:a",
             "aac",
             "-b:a",
             "192k",
+            "-ar",
+            str(AUDIO_SAMPLE_RATE),
+            "-ac",
+            str(AUDIO_CHANNEL_COUNT),
             "-movflags",
             "+faststart",
             output_path,
@@ -451,7 +565,16 @@ def _render_segment(
     )
 
 
-def _render_intro_segment(*, image_path: str, output_path: str, intro_seconds: float, fps: int, width: int, height: int) -> None:
+def _render_intro_segment(
+    *,
+    image_path: str,
+    output_path: str,
+    intro_seconds: float,
+    fps: int,
+    width: int,
+    height: int,
+    video_codec_args: list[str],
+) -> None:
     video_filter = ",".join(
         [
             f"scale={width}:{height}:force_original_aspect_ratio=decrease",
@@ -471,22 +594,21 @@ def _render_intro_segment(*, image_path: str, output_path: str, intro_seconds: f
             "-f",
             "lavfi",
             "-i",
-            "anullsrc=r=44100:cl=mono",
+            f"anullsrc=r={AUDIO_SAMPLE_RATE}:cl={AUDIO_CHANNEL_LAYOUT}",
             "-vf",
             video_filter,
             "-shortest",
             "-t",
             f"{intro_seconds:.3f}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "18",
+            *video_codec_args,
             "-c:a",
             "aac",
             "-b:a",
             "192k",
+            "-ar",
+            str(AUDIO_SAMPLE_RATE),
+            "-ac",
+            str(AUDIO_CHANNEL_COUNT),
             "-movflags",
             "+faststart",
             output_path,
@@ -515,13 +637,19 @@ def _concat_segments(*, segment_paths: list[str], output_path: str, temp_dir: Pa
     )
 
 
-def build_video_project(options: BuildOptions) -> str:
+def build_video_project(options: BuildOptions, *, progress_fn=None) -> dict[str, object]:
+    _emit_progress(progress_fn, "Resolving encoder and input files...")
     width, height = options.resolution
     if width <= 0 or height <= 0:
         raise VideoFusionError("Resolution must contain positive integer width and height.")
 
+    video_codec = _resolve_video_codec(options.encoder)
+    video_codec_args = _build_video_codec_args(video_codec, fast_mode=options.fast_mode)
+    _emit_progress(progress_fn, f"Using video codec: {video_codec} (fast mode: {'on' if options.fast_mode else 'off'})")
+
     out_path = Path(options.out_path)
     pairs = _resolve_inputs(options)
+    _emit_progress(progress_fn, f"Resolved {len(pairs)} image/audio pair(s).")
 
     if not options.images_dir:
         for file_path in [*options.images, *options.audios]:
@@ -535,7 +663,8 @@ def build_video_project(options: BuildOptions) -> str:
     with tempfile.TemporaryDirectory(prefix="easy-video-fusion-") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         timed_pairs: list[TimedPairInput] = []
-        for pair in pairs:
+        for i, pair in enumerate(pairs):
+            _emit_progress(progress_fn, f"Probing audio duration {i + 1}/{len(pairs)}...")
             duration = probe_audio_duration_seconds(pair.audio_path)
             timed_pairs.append(
                 TimedPairInput(
@@ -547,9 +676,11 @@ def build_video_project(options: BuildOptions) -> str:
             )
 
         timeline = build_timeline(timed_pairs, options.padding_seconds)
+        _emit_progress(progress_fn, f"Timeline ready with {len(timeline)} slide segment(s).")
         segment_paths: list[str] = []
 
         if timeline and options.intro_seconds > 0:
+            _emit_progress(progress_fn, f"Rendering intro segment ({options.intro_seconds:.1f}s)...")
             intro_path = str(temp_dir / "segment-0000.mp4")
             segment_paths.append(intro_path)
             _render_intro_segment(
@@ -559,25 +690,37 @@ def build_video_project(options: BuildOptions) -> str:
                 fps=options.fps,
                 width=width,
                 height=height,
+                video_codec_args=video_codec_args,
             )
 
-        for slide in timeline:
+        for i, slide in enumerate(timeline):
+            _emit_progress(progress_fn, f"Rendering slide segment {i + 1}/{len(timeline)}...")
             segment_path = str(temp_dir / f"segment-{slide.index + 1:04d}.mp4")
             segment_paths.append(segment_path)
             _render_segment(
                 image_path=slide.image_path,
                 audio_path=slide.audio_path,
                 output_path=segment_path,
-                duration_seconds=slide.audio_duration_seconds,
+                duration_seconds=slide.duration_seconds,
                 padding_seconds=options.padding_seconds,
                 fps=options.fps,
                 width=width,
                 height=height,
+                video_codec_args=video_codec_args,
             )
 
+        _emit_progress(progress_fn, "Concatenating all segments...")
         _concat_segments(segment_paths=segment_paths, output_path=str(out_path), temp_dir=temp_dir)
+        _emit_progress(progress_fn, "Done.")
 
-    return str(out_path)
+        return {
+            "output_path": str(out_path),
+            "temp_dir": temp_dir_name,
+            "slides": timeline,
+            "segment_paths": segment_paths,
+            "video_codec": video_codec,
+            "fast_mode": options.fast_mode,
+        }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -587,8 +730,17 @@ def main(argv: list[str] | None = None) -> int:
         if parsed is None:
             sys.stdout.write(f"{format_usage()}\n")
             return 0
-        output_path = build_video_project(parsed)
-        sys.stdout.write(f"Wrote {output_path}\n")
+
+        started_at = time.monotonic()
+
+        def progress(message: str) -> None:
+            elapsed = time.monotonic() - started_at
+            sys.stderr.write(f"[easy-video-fusion +{elapsed:7.2f}s] {message}\n")
+            sys.stderr.flush()
+
+        result = build_video_project(parsed, progress_fn=progress)
+        codec = result.get("video_codec", "unknown")
+        sys.stdout.write(f"Wrote {result['output_path']} (video codec: {codec})\n")
         return 0
     except VideoFusionError as error:
         sys.stderr.write(f"easy-video-fusion: {error}\n")

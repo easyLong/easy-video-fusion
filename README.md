@@ -20,6 +20,8 @@
 - 支持显式配对模式：通过重复传入 `--image` / `--audio` 构建序列
 - 支持每页额外缓冲秒数 `--padding-seconds`
 - 支持视频开场停留秒数 `--intro-seconds`
+- 支持编码器选择 `--encoder`（自动优先 NVENC/QSV/AMF）
+- 支持快速模式 `--fast`（用更快编码参数换取更快速度）
 - 支持自定义帧率和分辨率
 - 支持桌面 GUI
 - Windows 下支持用 `easy-video-fusion-gui.vbs` 静默启动 GUI
@@ -112,6 +114,19 @@ python -m easy_video_fusion build ^
 | `--fps <n>` | 输出帧率 | `30` |
 | `--resolution <WxH>` | 输出分辨率，例如 `1920x1080` | `1920x1080` |
 | `--intro-seconds <n>` | 视频开场停留秒数，使用第一张图片静默显示 | `5` |
+| `--encoder <name>` | 视频编码器：`auto`/`cpu`/`nvenc`/`qsv`/`amf` | `auto` |
+| `--fast` | 启用快速模式（更快编码，画质和体积会有取舍） | 关闭 |
+
+性能示例：
+
+```bash
+python -m easy_video_fusion build ^
+  --images-dir ./images ^
+  --audios-dir ./audios ^
+  --out ./out/video.mp4 ^
+  --encoder nvenc ^
+  --fast
+```
 
 ## 图片与音频目录规则
 
@@ -228,6 +243,7 @@ skills/easy-video-fusion/     可独立复制的 skill 版本
 
 - 重写 README，补充主项目 CLI、GUI、独立 skill 版本、目录规则和测试说明
 - 新增 `skills/easy-video-fusion` 独立可复制版本，内置纯 Python CLI 脚本
+- 新增 `--encoder` 与 `--fast`，支持自动优先 GPU 编码和快速模式
 
 ### v0.1.1
 

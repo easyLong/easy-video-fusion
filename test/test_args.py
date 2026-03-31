@@ -51,6 +51,8 @@ class ParseArgsTest(unittest.TestCase):
         self.assertEqual(parsed.options.padding_seconds, 4.0)
         self.assertEqual(parsed.options.fps, 24)
         self.assertEqual(parsed.options.resolution, (1280, 720))
+        self.assertEqual(parsed.options.encoder, "auto")
+        self.assertEqual(parsed.options.fast_mode, False)
 
     def test_accepts_directory_mode(self) -> None:
         parsed = parse_cli_args(
@@ -74,6 +76,28 @@ class ParseArgsTest(unittest.TestCase):
     def test_rejects_mismatched_media_counts(self) -> None:
         with self.assertRaisesRegex(Exception, "counts must match"):
             parse_cli_args(["--image", "a.png", "--audio", "a.mp3", "--audio", "b.mp3", "--out", "x"])
+
+    def test_accepts_encoder_and_fast_mode(self) -> None:
+        parsed = parse_cli_args(
+            [
+                "--image",
+                "a.png",
+                "--audio",
+                "a.mp3",
+                "--out",
+                "out.mp4",
+                "--encoder",
+                "nvenc",
+                "--fast",
+            ]
+        )
+
+        self.assertEqual(parsed.options.encoder, "nvenc")
+        self.assertEqual(parsed.options.fast_mode, True)
+
+    def test_rejects_invalid_encoder(self) -> None:
+        with self.assertRaisesRegex(Exception, "Invalid value for --encoder"):
+            parse_cli_args(["--image", "a.png", "--audio", "a.mp3", "--out", "out.mp4", "--encoder", "bad"])
 
 
 if __name__ == "__main__":

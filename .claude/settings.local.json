@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m easy_video_fusion.gui)"
+    ]
+  }
+}
