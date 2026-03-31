@@ -1,29 +1,53 @@
-﻿# easy-video-fusion
+# easy-video-fusion
 
-一个本地 Python CLI 工具，用于把图片和 TTS 音频合成为 MP4 视频。
+`easy-video-fusion` 是一个本地 Python 工具，用来把按顺序编号的图片和音频合成为 MP4 视频。
 
-工具会按顺序读取每一页素材，根据音频长度决定该页停留时间，默认再额外加 1 秒缓冲，最后调用 FFmpeg 生成成品视频。当前项目已完全切换为 Python 版本。
+它适合这类场景：
 
-除了命令行模式，还提供一个更适合直接点选操作的桌面应用，适合不想手动敲命令时使用。
+- 每张图片对应一段 TTS 或配音音频
+- 需要按顺序把多页内容合成为一个视频
+- 希望自动按音频时长控制每页停留时间
+- 希望在视频开头额外停留几秒，再进入第一段内容
+
+项目同时提供两种使用方式：
+
+- 主项目 CLI / GUI：适合直接在当前仓库里安装和使用
+- 独立 skill 脚本：位于 `skills/easy-video-fusion/`，适合单独复制出去使用
+
+## 功能概览
+
+- 支持目录批量模式：按数字文件名自动配对图片和音频
+- 支持显式配对模式：通过重复传入 `--image` / `--audio` 构建序列
+- 支持每页额外缓冲秒数 `--padding-seconds`
+- 支持视频开场停留秒数 `--intro-seconds`
+- 支持自定义帧率和分辨率
+- 支持桌面 GUI
+- Windows 下支持用 `easy-video-fusion-gui.vbs` 静默启动 GUI
 
 ## 环境要求
 
 - Python 3.10 或更高版本
-- `pyproject.toml` 中声明的 Python 依赖
+- `pyproject.toml` 中声明的依赖
+
+主项目安装后会使用这些 Python 依赖：
+
+- `imageio-ffmpeg`
+- `tinytag`
 
 ## 安装
 
-使用可编辑模式安装项目：
+在仓库根目录执行：
 
 ```bash
 python -m pip install -e .
 ```
 
-安装完成后，会自动提供 `easy-video-fusion` 命令。
+安装后会提供两个命令：
 
-如果你想直接打开桌面应用，也会提供 `easy-video-fusion-gui` 命令。
+- `easy-video-fusion`
+- `easy-video-fusion-gui`
 
-## 运行
+## 命令行使用
 
 查看帮助：
 
@@ -31,7 +55,13 @@ python -m pip install -e .
 python -m easy_video_fusion --help
 ```
 
-使用目录批量合成（默认 5 秒开场）：
+或：
+
+```bash
+easy-video-fusion --help
+```
+
+### 目录批量模式
 
 ```bash
 python -m easy_video_fusion build ^
@@ -40,7 +70,16 @@ python -m easy_video_fusion build ^
   --out ./out/video.mp4
 ```
 
-自定义开场时间（3 秒）：
+### 显式配对模式
+
+```bash
+python -m easy_video_fusion build ^
+  --image ./slides/01.png --audio ./tts/01.mp3 ^
+  --image ./slides/02.png --audio ./tts/02.mp3 ^
+  --out ./out/video.mp4
+```
+
+### 自定义开场时间
 
 ```bash
 python -m easy_video_fusion build ^
@@ -50,7 +89,7 @@ python -m easy_video_fusion build ^
   --intro-seconds 3
 ```
 
-禁用开场（直接开始视频）：
+### 禁用开场
 
 ```bash
 python -m easy_video_fusion build ^
@@ -60,138 +99,146 @@ python -m easy_video_fusion build ^
   --intro-seconds 0
 ```
 
-使用显式成对参数合成：
+## 参数说明
 
-```bash
-python -m easy_video_fusion build ^
-  --image ./slides/01.png --audio ./tts/01.mp3 ^
-  --image ./slides/02.png --audio ./tts/02.mp3 ^
-  --out ./out/video.mp4
-```
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `--images-dir <dir>` | 图片输入目录 | - |
+| `--audios-dir <dir>` | 音频输入目录 | - |
+| `--image <path>` | 单张图片输入，可重复传入 | - |
+| `--audio <path>` | 单段音频输入，可重复传入 | - |
+| `--out <file.mp4>` | 输出视频文件 | 必填 |
+| `--padding-seconds <n>` | 每页音频结束后额外停留的秒数 | `1` |
+| `--fps <n>` | 输出帧率 | `30` |
+| `--resolution <WxH>` | 输出分辨率，例如 `1920x1080` | `1920x1080` |
+| `--intro-seconds <n>` | 视频开场停留秒数，使用第一张图片静默显示 | `5` |
 
-如果你已经安装了包，也可以直接使用命令：
+## 图片与音频目录规则
 
-```bash
-easy-video-fusion --help
-```
+目录模式下，图片和音频要分别放在两个目录里，并且文件名必须使用数字编号。
 
-打开桌面应用：
-
-```bash
-easy-video-fusion-gui
-```
-
-桌面应用会让你选择图片目录、音频目录和输出路径，然后一键生成视频。
-其中帧率、分辨率和开场秒数使用输入框或下拉选择，图片/音频还是按数字编号自动配对。
-
-## 批量目录规则
-
-图片和音频分别放在两个目录中，文件名必须是数字编号，并且两边完全一致。
-
-支持的命名示例：
+支持示例：
 
 - `1.png` + `1.mp3`
 - `001.png` + `001.wav`
-- `10.png` + `10.mp3`
+- `10.jpg` + `10.mp3`
 
-规则说明：
+规则如下：
 
-- 只读取目录最外层文件，不会递归子目录。
-- 按数字顺序排序，所以 `2.png` 会排在 `10.png` 前面。
-- 同一个目录里，编号不能重复。
-- 图片目录和音频目录必须包含完全相同的编号。
+- 只读取目录最外层文件，不递归子目录
+- 按数字顺序排序，不按字符串字典序排序
+- 图片和音频的编号必须完全一致
+- 同一个目录内不能出现重复编号
+- 如果有一边缺文件，程序会直接报错
 
-## 参数说明
+## 输出行为
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--images-dir <dir>` | 目录 | - | 图片输入目录 |
-| `--audios-dir <dir>` | 目录 | - | 音频输入目录 |
-| `--image <path>` | 文件路径 | - | 单张图片输入，可重复传入 |
-| `--audio <path>` | 文件路径 | - | 单段音频输入，可重复传入 |
-| `--out <file.mp4>` | 文件路径 | - | 输出视频文件（必需） |
-| `--padding-seconds <n>` | 浮点数 | `1` | 每页在音频结束后额外停留的秒数 |
-| `--fps <n>` | 整数 | `30` | 输出视频帧率（24/30/60） |
-| `--resolution <WxH>` | 分辨率 | `1920x1080` | 输出分辨率，格式为 `1280x720` 等 |
-| `--intro-seconds <n>` | 浮点数 | `5` | 开场时间（秒），使用第一张图片显示此时长，设为 0 禁用开场 |
+最终视频由两部分组成：
 
-### 开场说明
+- 开场部分：第一张图片静默显示 `intro_seconds` 秒
+- 内容部分：每一页的时长为 `音频时长 + padding_seconds`
 
-- **开场是什么**：视频开始时会显示第一张图片，额外停留指定的秒数，没有声音
-- **默认行为**：默认开场 5 秒，然后才开始播放第一段音频和对应的图片
-- **禁用开场**：设置 `--intro-seconds 0` 可以跳过开场，视频直接从第一段音频开始
-- **自定义时长**：支持浮点数，如 `2.5` 表示 2.5 秒开场
+程序会先生成临时分段，再使用 FFmpeg 合并为最终 MP4。临时文件在完成后会自动清理。
 
-桌面应用同样沿用这些默认值，界面里可以直接改。
+## 桌面 GUI
 
-## 桌面应用
-
-启动桌面版：
+启动 GUI：
 
 ```bash
 easy-video-fusion-gui
 ```
 
-开发环境下，也可以直接运行：
+开发环境下也可以直接运行：
 
 ```bash
 python -m easy_video_fusion.gui
 ```
 
-Windows 下还提供了仓库根目录的启动器：
+Windows 下还可以双击仓库根目录的：
 
 ```text
 easy-video-fusion-gui.vbs
 ```
 
-双击这个文件就能直接打开桌面应用，它本质上封装了 `python -m easy_video_fusion.gui`，并且不会弹出黑色控制台窗口。
+它会直接拉起 GUI，并尽量避免弹出黑色控制台窗口。
 
-## Windows UI 操作
+## 独立 Skill 版本
 
-1. 双击 `easy-video-fusion-gui.vbs` 打开桌面应用。
-2. 在"图片目录"里选择图片文件夹，在"音频目录"里选择音频文件夹。
-3. 在"输出文件"里指定生成的 `MP4` 文件路径。
-4. 根据需要配置参数：
-   - **缓冲秒数**：每页在音频结束后额外停留的时间（默认 1 秒）
-   - **开场秒数**：视频开始时显示第一张图片的时长，无声音（默认 5 秒，设为 0 禁用）
-   - **帧率**：选择 24、30 或 60 FPS（默认 30）
-   - **分辨率**：选择预定义分辨率或输入自定义值（默认 1920x1080）
-5. 点击"生成视频"开始合成。
-6. 生成完成后，点击"打开输出目录"查看结果文件。
+仓库中还包含一个可单独复制的独立版本：
 
-操作时请确保图片和音频文件名都是数字编号，并且两边一一对应，例如 `01.jpg` 对应 `01.mp3`。
+[`skills/easy-video-fusion`](./skills/easy-video-fusion)
 
-## 输出结果
+它的定位和主项目不同：
 
-命令会在你指定的 `--out` 路径写出一个 MP4 文件。
+- 主项目版本：依赖当前仓库源码与 `pyproject.toml` 依赖
+- skill 版本：只依赖 skill 目录本身的 Python 脚本
 
-渲染过程中生成的临时分段文件会在完成后自动清理。
+skill 版入口：
 
-最终视频的时长构成：
-- **开场部分**：第一张图片显示 `intro_seconds` 秒（无声音）
-- **内容部分**：按顺序播放每个图片+音频对，每个画面停留时长 = 音频时长 + 缓冲秒数
+```bash
+python skills/easy-video-fusion/scripts/easy_video_fusion.py --help
+```
+
+skill 版说明：
+
+- 适合单独复制目录后使用
+- 只保留 Python 运行方式
+- 不依赖当前仓库的 `src/easy_video_fusion/`
+- 需要自己提供 `ffmpeg` / `ffprobe` 可执行环境
+
+## 开发与测试
+
+运行全部单元测试：
+
+```bash
+python -m unittest discover -s test
+```
+
+如果只想检查某个模块，可以按文件分别运行，例如：
+
+```bash
+python -m unittest discover -s test -p "test_args.py"
+python -m unittest discover -s test -p "test_video_fusion.py"
+```
 
 ## 常见错误
 
 以下情况会直接报错并退出：
 
-- Python 或所需的 Python 依赖未安装
+- Python 或依赖没有安装
 - 图片和音频数量不一致
-- 目录中的文件名不是数字编号
-- 同一个目录中出现重复编号
 - 输入文件或目录不存在
-- 参数值无效（如负数的开场秒数、非法分辨率等）
+- 目录中的文件名不是纯数字编号
+- 同一个目录中存在重复编号
+- 分辨率格式错误
+- `--intro-seconds` 为负数
+
+## 项目结构
+
+```text
+src/easy_video_fusion/        主项目源码
+test/                         单元测试
+easy-video-fusion-gui.vbs     Windows GUI 启动器
+skills/easy-video-fusion/     可独立复制的 skill 版本
+```
 
 ## 更新日志
 
+### v0.1.2
+
+- 重写 README，补充主项目 CLI、GUI、独立 skill 版本、目录规则和测试说明
+- 新增 `skills/easy-video-fusion` 独立可复制版本，内置纯 Python CLI 脚本
+
 ### v0.1.1
-- ✨ 新增 `--intro-seconds` 参数，支持自定义开场时间（默认 5 秒）
-- ✨ GUI 中新增"开场秒数"输入框
-- 🐛 修复：开场视频缺少音频轨道导致 concat 后整个视频无声的问题
-- 📝 完善参数文档
+
+- 新增 `--intro-seconds` 参数，支持自定义开场时间，默认 5 秒
+- GUI 中新增开场秒数输入能力
+- 修复开场视频缺少音频轨道后 concat 可能导致整段视频无声的问题
+- 完善参数与使用文档
 
 ### v0.1.0
-- 🎉 初始版本
-- ✅ CLI 模式支持批量合成
-- ✅ GUI 桌面应用
-- ✅ 支持图片目录配对和显式参数对
+
+- 初始版本
+- 提供 CLI 模式批量合成能力
+- 提供 GUI 桌面应用
+- 支持图片目录配对和显式参数配对
